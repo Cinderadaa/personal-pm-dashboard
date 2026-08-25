@@ -9,8 +9,9 @@ export interface SupabaseConfig {
 }
 
 export function getStoredSupabaseConfig(): SupabaseConfig {
-  const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL || '';
-  const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+  const env = (import.meta as any).env || {};
+  const envUrl = env.NEXT_PUBLIC_SUPABASE_URL || env.VITE_SUPABASE_URL || '';
+  const envKey = env.NEXT_PUBLIC_SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY || '';
 
   const storedUrl = localStorage.getItem(STORAGE_SUPABASE_URL_KEY) || envUrl;
   const storedKey = localStorage.getItem(STORAGE_SUPABASE_KEY_KEY) || envKey;

@@ -17,6 +17,8 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
   projectToEdit,
 }) => {
   const { addProject, updateProject } = useProjectContext();
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -45,31 +47,39 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
     }
   }, [projectToEdit, isOpen]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
-    if (projectToEdit) {
-      updateProject(projectToEdit.id, {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      if (projectToEdit) {
+        const saved = await updateProject(projectToEdit.id, {
         name: name.trim(),
         description: description.trim(),
         category,
         status,
         priority,
         deadline,
-      });
-    } else {
-      addProject({
+        });
+        if (!saved) throw new Error('Unable to save project to Supabase.');
+      } else {
+        await addProject({
         name: name.trim(),
         description: description.trim(),
         category,
         status,
         priority,
         deadline,
-      });
+        });
+      }
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Unable to save project.');
+    } finally {
+      setIsSaving(false);
     }
-
-    onClose();
   };
 
   return (
@@ -81,6 +91,7 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
       maxWidth="md"
     >
       <form onSubmit={handleSubmit} className="space-y-4 font-mono">
+        {saveError && <p className="text-xs text-[#e06c75]">{saveError}</p>}
         {/* Project Name */}
         <div>
           <label className="block text-xs text-[#abb2bf] mb-1">
@@ -188,9 +199,10 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({
           </button>
           <button
             type="submit"
+            disabled={isSaving}
             className="px-4 py-1.5 text-xs font-semibold bg-[#61afef] text-[#14161a] rounded-lg hover:bg-[#52a1e0] transition-colors shadow-xs"
           >
-            {projectToEdit ? 'Save Changes' : 'Create Project'}
+            {isSaving ? 'Saving...' : projectToEdit ? 'Save Changes' : 'Create Project'}
           </button>
         </div>
       </form>

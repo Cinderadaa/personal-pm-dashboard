@@ -19,6 +19,8 @@ interface ProjectContextType {
   isSupabaseConnected: boolean;
   isCloudSyncing: boolean;
   lastSyncedAt: string | null;
+  isInitialLoading: boolean;
+  supabaseError: string | null;
   checkSupabaseConnection: () => Promise<void>;
   pushLocalToCloud: () => Promise<boolean>;
   pullCloudToLocal: () => Promise<boolean>;
@@ -33,17 +35,17 @@ interface ProjectContextType {
   getProject: (id: string) => Project | undefined;
   getProjectTasks: (projectId: string) => Task[];
   getProjectProgress: (projectId: string) => number;
-  addProject: (project: Omit<Project, 'id' | 'createdAt'>) => Project;
-  updateProject: (id: string, updates: Partial<Project>) => void;
-  deleteProject: (id: string) => void;
+  addProject: (project: Omit<Project, 'id' | 'createdAt'>) => Promise<Project>;
+  updateProject: (id: string, updates: Partial<Project>) => Promise<boolean>;
+  deleteProject: (id: string) => Promise<boolean>;
 
   // Task Actions
   getTask: (id: string) => Task | undefined;
-  addTask: (task: Omit<Task, 'id' | 'createdAt'>) => Task;
-  updateTask: (id: string, updates: Partial<Task>) => void;
+  addTask: (task: Omit<Task, 'id' | 'createdAt'>) => Promise<Task>;
+  updateTask: (id: string, updates: Partial<Task>) => Promise<boolean>;
   toggleTask: (id: string) => void;
   setTaskStatus: (id: string, status: TaskStatus) => void;
-  deleteTask: (id: string) => void;
+  deleteTask: (id: string) => Promise<boolean>;
 
   // Subtasks
   toggleSubtask: (taskId: string, subtaskId: string) => void;
@@ -114,6 +116,8 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(false);
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
 
   // Persist Projects to localStorage
   useEffect(() => {
@@ -137,11 +141,14 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
       const { error } = await supabase.from('projects').select('id').limit(1);
       if (!error) {
         setIsSupabaseConnected(true);
+        setSupabaseError(null);
       } else {
         setIsSupabaseConnected(false);
+        setSupabaseError(error.message);
       }
-    } catch {
+    } catch (error) {
       setIsSupabaseConnected(false);
+      setSupabaseError(error instanceof Error ? error.message : 'Supabase connection failed.');
     }
   }, []);
 
@@ -159,11 +166,12 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
 
       if (projRes.error || taskRes.error) {
         console.error('Supabase pull error:', projRes.error || taskRes.error);
+        setSupabaseError((projRes.error || taskRes.error)?.message || 'Failed to load Supabase data.');
         setIsCloudSyncing(false);
         return false;
       }
 
-      if (projRes.data && projRes.data.length > 0) {
+      if (projRes.data) {
         const mappedProjects: Project[] = projRes.data.map((p: any) => ({
           id: p.id,
           name: p.name,
@@ -178,7 +186,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
         setProjects(mappedProjects);
       }
 
-      if (taskRes.data && taskRes.data.length > 0) {
+      if (taskRes.data) {
         const mappedTasks: Task[] = taskRes.data.map((t: any) => ({
           id: t.id,
           projectId: t.project_id,
@@ -198,10 +206,12 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
 
       setLastSyncedAt(new Date().toISOString());
       setIsSupabaseConnected(true);
+      setSupabaseError(null);
       setIsCloudSyncing(false);
       return true;
     } catch (err) {
       console.error('Pull cloud failed:', err);
+      setSupabaseError(err instanceof Error ? err.message : 'Failed to load Supabase data.');
       setIsCloudSyncing(false);
       return false;
     }
@@ -268,13 +278,44 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
 
   // On initial mount: test Supabase and pull if connected
   useEffect(() => {
-    const config = getStoredSupabaseConfig();
-    if (config.url && config.anonKey) {
-      checkSupabaseConnection().then(() => {
-        pullCloudToLocal();
-      });
-    }
-  }, [checkSupabaseConnection, pullCloudToLocal]);
+    let cancelled = false;
+    const initialize = async () => {
+      const config = getStoredSupabaseConfig();
+      if (!config.url || !config.anonKey) {
+        if (!cancelled) setIsInitialLoading(false);
+        return;
+      }
+
+      const supabase = getSupabase();
+      if (!supabase) {
+        if (!cancelled) {
+          setSupabaseError('Supabase configuration is invalid.');
+          setIsInitialLoading(false);
+        }
+        return;
+      }
+
+      const { error } = await supabase.from('projects').select('id').limit(1);
+      if (error) {
+        if (!cancelled) {
+          setIsSupabaseConnected(false);
+          setSupabaseError(error.message);
+          setIsInitialLoading(false);
+        }
+        return;
+      }
+
+      await pullCloudToLocal();
+      if (!cancelled) setIsInitialLoading(false);
+    };
+    initialize().catch((error) => {
+      if (!cancelled) {
+        setSupabaseError(error instanceof Error ? error.message : 'Failed to initialize Supabase.');
+        setIsInitialLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [pullCloudToLocal]);
 
   const setActiveView = (view: ViewMode, projectId: string | null = null) => {
     setActiveViewRaw(view);
@@ -325,19 +366,16 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   }, [tasks, projects]);
 
   // Project CRUD
-  const addProject = (projectData: Omit<Project, 'id' | 'createdAt'>): Project => {
+  const addProject = async (projectData: Omit<Project, 'id' | 'createdAt'>): Promise<Project> => {
     const newProject: Project = {
       ...projectData,
       id: `proj-${Date.now()}`,
       createdAt: getTodayDateString(),
     };
 
-    setProjects((prev) => [newProject, ...prev]);
-
-    // Supabase background sync
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('projects').insert({
+      const { error } = await supabase.from('projects').insert({
         id: newProject.id,
         name: newProject.name,
         description: newProject.description,
@@ -346,20 +384,18 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
         deadline: newProject.deadline,
         priority: newProject.priority,
         icon: newProject.icon || null,
-      }).then(({ error }) => {
-        if (error) console.error('Supabase addProject error:', error);
       });
+      if (error) {
+        setSupabaseError(error.message);
+        throw error;
+      }
     }
 
+    setProjects((prev) => [newProject, ...prev]);
     return newProject;
   };
 
-  const updateProject = (id: string, updates: Partial<Project>) => {
-    setProjects((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
-    );
-
-    // Supabase background sync
+  const updateProject = async (id: string, updates: Partial<Project>): Promise<boolean> => {
     const supabase = getSupabase();
     if (supabase) {
       const dbUpdates: any = {};
@@ -370,37 +406,39 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
       if (updates.deadline !== undefined) dbUpdates.deadline = updates.deadline;
       if (updates.priority !== undefined) dbUpdates.priority = updates.priority;
 
-      supabase.from('projects').update(dbUpdates).eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase updateProject error:', error);
-      });
+      const { error } = await supabase.from('projects').update(dbUpdates).eq('id', id);
+      if (error) {
+        setSupabaseError(error.message);
+        return false;
+      }
     }
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+    return true;
   };
 
-  const deleteProject = (id: string) => {
-    setProjects((prev) => prev.filter((p) => p.id !== id));
-    setTasks((prev) => prev.filter((t) => t.projectId !== id));
-
-    if (activeProjectId === id) {
-      setActiveView('projects', null);
-    }
-
-    // Supabase background sync
+  const deleteProject = async (id: string): Promise<boolean> => {
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('projects').delete().eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase deleteProject error:', error);
-      });
+      const { error } = await supabase.from('projects').delete().eq('id', id);
+      if (error) {
+        setSupabaseError(error.message);
+        return false;
+      }
     }
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    setTasks((prev) => prev.filter((t) => t.projectId !== id));
+    if (activeProjectId === id) setActiveView('projects', null);
+    return true;
   };
 
   // Task CRUD
-  const addTask = (taskData: Omit<Task, 'id' | 'createdAt'>): Task => {
+  const addTask = async (taskData: Omit<Task, 'id' | 'createdAt'>): Promise<Task> => {
     let targetProjectId = taskData.projectId;
 
     // If no projects exist or target project not found, auto-create a general project
     if (!projects.some((p) => p.id === targetProjectId)) {
       if (projects.length === 0) {
-        const defaultProj = addProject({
+        const defaultProj = await addProject({
           name: 'General & Personal',
           description: 'Default project workspace for daily personal tasks and routines.',
           category: 'personal',
@@ -421,12 +459,9 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
       createdAt: getTodayDateString(),
     };
 
-    setTasks((prev) => [newTask, ...prev]);
-
-    // Supabase background sync
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('tasks').insert({
+      const { error } = await supabase.from('tasks').insert({
         id: newTask.id,
         project_id: newTask.projectId,
         title: newTask.title,
@@ -437,36 +472,30 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
         due_time: newTask.dueTime || null,
         subtasks: newTask.subtasks,
         tags: newTask.tags,
-      }).then(({ error }) => {
-        if (error) console.error('Supabase addTask error:', error);
+        completed_at: newTask.status === 'completed' ? newTask.createdAt : null,
       });
+      if (error) {
+        setSupabaseError(error.message);
+        throw error;
+      }
     }
 
+    setTasks((prev) => [newTask, ...prev]);
     return newTask;
   };
 
-  const updateTask = (id: string, updates: Partial<Task>) => {
-    let updatedTaskObj: Task | undefined;
+  const updateTask = async (id: string, updates: Partial<Task>): Promise<boolean> => {
+    const currentTask = tasks.find((task) => task.id === id);
+    if (!currentTask) return false;
+    const updatedTask: Task = { ...currentTask, ...updates };
+    if (updates.status === 'completed' && currentTask.status !== 'completed') {
+      updatedTask.completedAt = getTodayDateString();
+    } else if (updates.status && updates.status !== 'completed') {
+      updatedTask.completedAt = undefined;
+    }
 
-    setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id === id) {
-          const updated = { ...t, ...updates };
-          if (updates.status === 'completed' && t.status !== 'completed') {
-            updated.completedAt = getTodayDateString();
-          } else if (updates.status && updates.status !== 'completed') {
-            updated.completedAt = undefined;
-          }
-          updatedTaskObj = updated;
-          return updated;
-        }
-        return t;
-      })
-    );
-
-    // Supabase background sync
     const supabase = getSupabase();
-    if (supabase && updatedTaskObj) {
+    if (supabase) {
       const dbUpdates: any = {};
       if (updates.title !== undefined) dbUpdates.title = updates.title;
       if (updates.description !== undefined) dbUpdates.description = updates.description;
@@ -476,12 +505,17 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
       if (updates.dueTime !== undefined) dbUpdates.due_time = updates.dueTime || null;
       if (updates.subtasks !== undefined) dbUpdates.subtasks = updates.subtasks;
       if (updates.tags !== undefined) dbUpdates.tags = updates.tags;
-      if (updatedTaskObj.completedAt !== undefined) dbUpdates.completed_at = updatedTaskObj.completedAt;
+      if (updates.projectId !== undefined) dbUpdates.project_id = updates.projectId;
+      dbUpdates.completed_at = updatedTask.completedAt || null;
 
-      supabase.from('tasks').update(dbUpdates).eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase updateTask error:', error);
-      });
+      const { error } = await supabase.from('tasks').update(dbUpdates).eq('id', id);
+      if (error) {
+        setSupabaseError(error.message);
+        return false;
+      }
     }
+    setTasks((prev) => prev.map((task) => task.id === id ? updatedTask : task));
+    return true;
   };
 
   const setTaskStatus = (id: string, status: TaskStatus) => {
@@ -507,15 +541,17 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
     setTaskStatus(id, nextStatus);
   };
 
-  const deleteTask = (id: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-
+  const deleteTask = async (id: string): Promise<boolean> => {
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('tasks').delete().eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase deleteTask error:', error);
-      });
+      const { error } = await supabase.from('tasks').delete().eq('id', id);
+      if (error) {
+        setSupabaseError(error.message);
+        return false;
+      }
     }
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+    return true;
   };
 
   // Subtask Actions
@@ -588,6 +624,8 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
         isSupabaseConnected,
         isCloudSyncing,
         lastSyncedAt,
+        isInitialLoading,
+        supabaseError,
         checkSupabaseConnection,
         pushLocalToCloud,
         pullCloudToLocal,

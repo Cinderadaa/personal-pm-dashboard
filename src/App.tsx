@@ -12,7 +12,7 @@ import { ProjectModal } from './components/projects/ProjectModal';
 import { Task } from './types';
 
 const MainAppContent: React.FC = () => {
-  const { activeView, activeProjectId } = useProjectContext();
+  const { activeView, activeProjectId, isInitialLoading, supabaseError } = useProjectContext();
 
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isGlobalNewTaskOpen, setIsGlobalNewTaskOpen] = useState(false);
@@ -35,6 +35,22 @@ const MainAppContent: React.FC = () => {
     setTaskToEdit(task);
     setIsGlobalNewTaskOpen(true);
   };
+
+  if (isInitialLoading) {
+    return <div className="min-h-screen bg-white dark:bg-[#09090b] text-neutral-500 flex items-center justify-center font-mono text-sm">Loading workspace...</div>;
+  }
+
+  if (supabaseError) {
+    return (
+      <div className="min-h-screen bg-white dark:bg-[#09090b] text-neutral-500 flex items-center justify-center p-6 font-mono text-sm">
+        <div className="max-w-lg text-center space-y-3">
+          <p className="text-[#e06c75]">Unable to load Supabase data.</p>
+          <p>{supabaseError}</p>
+          <p className="text-xs">Check your environment variables and database schema, then reload.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-white dark:bg-[#09090b] text-neutral-900 dark:text-neutral-100 flex flex-col font-sans transition-colors duration-200">

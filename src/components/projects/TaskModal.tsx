@@ -21,6 +21,8 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   defaultStatus = 'todo',
 }) => {
   const { projects, addTask, updateTask } = useProjectContext();
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -79,7 +81,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     setSubtasks(subtasks.filter((st) => st.id !== id));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
 
@@ -88,8 +90,11 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       .map((t) => t.trim().toLowerCase())
       .filter((t) => t.length > 0);
 
-    if (taskToEdit) {
-      updateTask(taskToEdit.id, {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      if (taskToEdit) {
+        const saved = await updateTask(taskToEdit.id, {
         title: title.trim(),
         description: description.trim(),
         projectId,
@@ -99,9 +104,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         dueTime: dueTime || undefined,
         tags,
         subtasks,
-      });
-    } else {
-      addTask({
+        });
+        if (!saved) throw new Error('Unable to save task to Supabase.');
+      } else {
+        await addTask({
         title: title.trim(),
         description: description.trim(),
         projectId,
@@ -111,10 +117,14 @@ export const TaskModal: React.FC<TaskModalProps> = ({
         dueTime: dueTime || undefined,
         tags,
         subtasks,
-      });
+        });
+      }
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Unable to save task.');
+    } finally {
+      setIsSaving(false);
     }
-
-    onClose();
   };
 
   return (
@@ -126,6 +136,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       maxWidth="lg"
     >
       <form onSubmit={handleSubmit} className="space-y-4 font-mono">
+        {saveError && <p className="text-xs text-[#e06c75]">{saveError}</p>}
         {/* Title */}
         <div>
           <label className="block text-xs text-[#abb2bf] mb-1">
@@ -335,9 +346,10 @@ export const TaskModal: React.FC<TaskModalProps> = ({
           </button>
           <button
             type="submit"
+            disabled={isSaving}
             className="px-4 py-1.5 text-xs font-semibold bg-[#61afef] text-[#14161a] rounded-lg hover:bg-[#52a1e0] transition-colors shadow-xs"
           >
-            {taskToEdit ? 'Save Changes' : 'Create Task'}
+            {isSaving ? 'Saving...' : taskToEdit ? 'Save Changes' : 'Create Task'}
           </button>
         </div>
       </form>

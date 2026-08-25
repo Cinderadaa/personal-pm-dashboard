@@ -11,7 +11,9 @@ create table if not exists public.projects (
   status text not null default 'active' check (status in ('active', 'on_hold', 'completed')),
   deadline text not null,
   priority text not null default 'medium' check (priority in ('urgent', 'high', 'medium', 'low')),
+  start_date text,
   icon text,
+  color text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -26,11 +28,17 @@ create table if not exists public.tasks (
   priority text not null default 'medium' check (priority in ('urgent', 'high', 'medium', 'low')),
   due_date text not null,
   due_time text,
+  progress integer not null default 0 check (progress between 0 and 100),
   subtasks jsonb default '[]'::jsonb,
   tags jsonb default '[]'::jsonb,
   created_at timestamptz default now(),
   completed_at timestamptz
 );
+
+-- Keep existing installations compatible with the current application.
+alter table public.projects add column if not exists start_date text;
+alter table public.projects add column if not exists color text;
+alter table public.tasks add column if not exists progress integer not null default 0;
 
 -- 3. Create Indexes for High Performance
 create index if not exists idx_tasks_project_id on public.tasks(project_id);
